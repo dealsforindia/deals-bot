@@ -8,7 +8,7 @@ import re
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN") 
-SUBREDDIT = "dealsforindia" 
+SUBREDDIT = "laptopdeals" 
 
 def send_telegram_photo(caption, image_url):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
