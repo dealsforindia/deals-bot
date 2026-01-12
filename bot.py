@@ -4,6 +4,7 @@ import re
 import html
 import time
 import sys
+import random
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -12,9 +13,9 @@ EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
 SUBREDDIT = "dealsforindia"
 BATCH_LIMIT = 10 
 
-# --- NEW HEADER (The Fix for Error 403) ---
-# We use a unique ID so Reddit doesn't block us
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36/DealBotv2"}
+# --- NEW HEADER (The "Mobile" Disguise) ---
+# Reddit is friendlier to mobile devices. We will pretend to be an Android phone.
+HEADERS = {"User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"}
 
 def get_earnkaro_link(deal_url):
     if not EARNKARO_TOKEN: return deal_url
@@ -52,8 +53,11 @@ def send_telegram(caption, image_url=None):
         data["text"] = caption
         del data["caption"]
     
-    r = requests.post(url, data=data)
-    print(f"   -> Telegram Response: {r.status_code}")
+    try:
+        r = requests.post(url, data=data)
+        print(f"   -> Telegram Response: {r.status_code}")
+    except Exception as e:
+        print(f"   -> Telegram Error: {e}")
 
 def process_single_post(post_data):
     title = html.unescape(post_data['title'])
@@ -87,14 +91,11 @@ def process_single_post(post_data):
     send_telegram(full_caption, image_url)
 
 def main():
-    print("--- STARTING BOT ---")
+    print("--- STARTING BOT (Mobile Mode) ---")
     
-    try:
-        with open("last_post.txt", "r") as f: last_id = f.read().strip()
-        print(f"1. Last ID found: {last_id}")
-    except: 
-        last_id = None
-        print("1. No memory file found.")
+    # Reset memory check for debugging
+    last_id = "0"
+    print("1. Forcing clean run (Ignoring memory file for now)")
 
     url = f"https://www.reddit.com/r/{SUBREDDIT}/new.json?limit={BATCH_LIMIT}"
     print(f"2. Connecting to Reddit...")
@@ -103,27 +104,21 @@ def main():
     print(f"   Reddit Status Code: {r.status_code}")
     
     if r.status_code != 200:
-        print(f"   CRITICAL ERROR: Reddit blocked the bot!")
+        print(f"   CRITICAL ERROR: Reddit blocked the bot! Status: {r.status_code}")
         return
 
-    posts = r.json()['data']['children']
-    print(f"3. Found {len(posts)} posts.")
-
-    new_posts = []
-    for post in posts:
-        p_id = post['data']['id']
-        if p_id == last_id: break
-        new_posts.append(post['data'])
-
-    if not new_posts:
-        print("   No new posts. Exiting.")
+    try:
+        posts = r.json()['data']['children']
+        print(f"3. Found {len(posts)} posts.")
+    except:
+        print("   Error reading JSON data.")
         return
 
-    print(f"4. Sending {len(new_posts)} new posts...")
+    print(f"4. Sending posts...")
     
-    for post_data in reversed(new_posts):
-        process_single_post(post_data)
-        with open("last_post.txt", "w") as f: f.write(post_data['id'])
+    # Process only the last 5 to test
+    for post_data in reversed(posts[:5]):
+        process_single_post(post_data['data'])
         time.sleep(2)
 
     print("--- FINISHED SUCCESSFULLY ---")
