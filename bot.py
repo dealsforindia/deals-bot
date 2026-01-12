@@ -28,10 +28,20 @@ def get_earnkaro_link(deal_url):
     return deal_url
 
 def clean_html(raw_html):
-    """Removes HTML tags from RSS content to leave just text."""
+    """Removes HTML tags and ugly RSS footers."""
+    # 1. Remove HTML tags
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    return html.unescape(cleantext).strip()
+    
+    # 2. Decode special characters (like &amp;)
+    cleantext = html.unescape(cleantext).strip()
+    
+    # 3. REMOVE "submitted by /u/..."
+    # This splits the text and throws away the trash at the end
+    if "submitted by" in cleantext:
+        cleantext = cleantext.split("submitted by")[0].strip()
+        
+    return cleantext
 
 def process_text_links(text):
     """Finds links in the text and replaces them."""
@@ -65,31 +75,20 @@ def send_telegram(caption, image_url=None):
     requests.post(url, data=data)
 
 def main():
-    print("--- STARTING BOT (RSS MODE) ---")
+    print("--- STARTING BOT (RSS CLEAN MODE) ---")
     
-    # 1. Read Memory
     try:
         with open("last_post.txt", "r") as f: last_id = f.read().strip()
-        print(f"1. Last ID: {last_id}")
     except: last_id = None
 
-    # 2. Fetch RSS (Bypasses the JSON Block)
     rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
-    print(f"2. Fetching RSS: {rss_url}")
     
-    # We use requests to get the content with headers, then feedparser to read it
     try:
         r = requests.get(rss_url, headers=HEADERS)
-        if r.status_code != 200:
-            print(f"   Error: Reddit RSS returned {r.status_code}")
-            return
+        if r.status_code != 200: return
         feed = feedparser.parse(r.content)
-    except Exception as e:
-        print(f"   Error fetching feed: {e}")
-        return
+    except: return
 
-    print(f"3. Found {len(feed.entries)} posts.")
-    
     new_posts = []
     for entry in feed.entries:
         if entry.id == last_id: break
@@ -99,18 +98,16 @@ def main():
         print("   No new posts.")
         return
 
-    # 3. Process & Send
     print(f"4. Sending {len(new_posts)} posts...")
     for entry in reversed(new_posts):
         title = entry.title
-        print(f"   Processing: {title}")
         
-        # Get Body Content
+        # Get content
         content = ""
         if hasattr(entry, 'content'): content = entry.content[0].value
         elif hasattr(entry, 'summary'): content = entry.summary
         
-        # Extract Image from HTML content or metadata
+        # Extract Image
         image_url = None
         if hasattr(entry, 'media_thumbnail'):
              image_url = entry.media_thumbnail[0]['url']
@@ -118,7 +115,7 @@ def main():
              match = re.search(r'<img src="(.*?)"', content)
              if match: image_url = match.group(1)
 
-        # Clean text and swap links
+        # CLEAN THE TEXT (Remove "submitted by...")
         clean_body = clean_html(content)
         final_body = process_text_links(clean_body)
         
@@ -126,11 +123,8 @@ def main():
         
         send_telegram(caption, image_url)
         
-        # Save memory
         with open("last_post.txt", "w") as f: f.write(entry.id)
         time.sleep(2)
-
-    print("--- SUCCESS ---")
 
 if __name__ == "__main__":
     main()
