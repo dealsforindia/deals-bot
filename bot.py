@@ -1,23 +1,21 @@
+import feedparser
 import requests
 import os
 import re
 import html
 import time
-import sys
-import random
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
 SUBREDDIT = "dealsforindia"
-BATCH_LIMIT = 10 
 
-# --- NEW HEADER (The "Mobile" Disguise) ---
-# Reddit is friendlier to mobile devices. We will pretend to be an Android phone.
-HEADERS = {"User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"}
+# --- HEADERS ---
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
 
 def get_earnkaro_link(deal_url):
+    """Converts link to EarnKaro."""
     if not EARNKARO_TOKEN: return deal_url
     api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
     headers = {"Authorization": f"Bearer {EARNKARO_TOKEN}", "Content-Type": "application/json"}
@@ -27,12 +25,18 @@ def get_earnkaro_link(deal_url):
         if r.status_code == 200 and r.json().get("success") == 1:
             return r.json().get("data")
     except: pass
-    return deal_url 
+    return deal_url
+
+def clean_html(raw_html):
+    """Removes HTML tags from RSS content to leave just text."""
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', raw_html)
+    return html.unescape(cleantext).strip()
 
 def process_text_links(text):
+    """Finds links in the text and replaces them."""
     urls = re.findall(r'(https?://[^\s"<\]\)]+)', text)
     unique_urls = sorted(set(urls), key=urls.index)
-    
     final_text = text
     for url in unique_urls:
         if "reddit.com" in url or "preview" in url: continue
@@ -45,83 +49,88 @@ def send_telegram(caption, image_url=None):
     print("   -> Sending to Telegram...")
     if len(caption) > 1000: caption = caption[:990] + "..."
     data = {"chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
+    
+    # Try sending with image first
     if image_url:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
         data["photo"] = image_url
-    else:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data["text"] = caption
-        del data["caption"]
-    
-    try:
         r = requests.post(url, data=data)
-        print(f"   -> Telegram Response: {r.status_code}")
-    except Exception as e:
-        print(f"   -> Telegram Error: {e}")
-
-def process_single_post(post_data):
-    title = html.unescape(post_data['title'])
-    body_text = html.unescape(post_data.get('selftext', ''))
-    permalink = post_data['permalink']
+        if r.status_code == 200: return # Success
     
-    image_url = post_data.get('url_overridden_by_dest')
-    if not image_url or "reddit.com" in image_url:
-        thumb = post_data.get('thumbnail', '')
-        if "http" in thumb: image_url = thumb
-        else: image_url = None
-
-    final_body = process_text_links(body_text)
-
-    comment_text = ""
-    try:
-        comments_url = f"https://www.reddit.com{permalink}.json"
-        c_r = requests.get(comments_url, headers=HEADERS)
-        if c_r.status_code == 200:
-            comments_data = c_r.json()[1]['data']['children']
-            for comment in comments_data:
-                c_data = comment.get('data', {})
-                if c_data.get('is_submitter') == True and c_data.get('body'):
-                    processed_comment = process_text_links(html.unescape(c_data['body']))
-                    comment_text += f"\n\n🔹 <b>Update:</b>\n{processed_comment}"
-    except: pass
-
-    full_caption = f"<b>{title}</b>\n\n{final_body}{comment_text}\n\n#Deal #Loot"
-    
-    print(f"   Processing: {title}")
-    send_telegram(full_caption, image_url)
+    # Fallback to text only if image fails or no image
+    if "photo" in data: del data["photo"]
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data["text"] = caption
+    del data["caption"]
+    requests.post(url, data=data)
 
 def main():
-    print("--- STARTING BOT (Mobile Mode) ---")
+    print("--- STARTING BOT (RSS MODE) ---")
     
-    # Reset memory check for debugging
-    last_id = "0"
-    print("1. Forcing clean run (Ignoring memory file for now)")
-
-    url = f"https://www.reddit.com/r/{SUBREDDIT}/new.json?limit={BATCH_LIMIT}"
-    print(f"2. Connecting to Reddit...")
-    
-    r = requests.get(url, headers=HEADERS)
-    print(f"   Reddit Status Code: {r.status_code}")
-    
-    if r.status_code != 200:
-        print(f"   CRITICAL ERROR: Reddit blocked the bot! Status: {r.status_code}")
-        return
-
+    # 1. Read Memory
     try:
-        posts = r.json()['data']['children']
-        print(f"3. Found {len(posts)} posts.")
-    except:
-        print("   Error reading JSON data.")
+        with open("last_post.txt", "r") as f: last_id = f.read().strip()
+        print(f"1. Last ID: {last_id}")
+    except: last_id = None
+
+    # 2. Fetch RSS (Bypasses the JSON Block)
+    rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
+    print(f"2. Fetching RSS: {rss_url}")
+    
+    # We use requests to get the content with headers, then feedparser to read it
+    try:
+        r = requests.get(rss_url, headers=HEADERS)
+        if r.status_code != 200:
+            print(f"   Error: Reddit RSS returned {r.status_code}")
+            return
+        feed = feedparser.parse(r.content)
+    except Exception as e:
+        print(f"   Error fetching feed: {e}")
         return
 
-    print(f"4. Sending posts...")
+    print(f"3. Found {len(feed.entries)} posts.")
     
-    # Process only the last 5 to test
-    for post_data in reversed(posts[:5]):
-        process_single_post(post_data['data'])
+    new_posts = []
+    for entry in feed.entries:
+        if entry.id == last_id: break
+        new_posts.append(entry)
+
+    if not new_posts:
+        print("   No new posts.")
+        return
+
+    # 3. Process & Send
+    print(f"4. Sending {len(new_posts)} posts...")
+    for entry in reversed(new_posts):
+        title = entry.title
+        print(f"   Processing: {title}")
+        
+        # Get Body Content
+        content = ""
+        if hasattr(entry, 'content'): content = entry.content[0].value
+        elif hasattr(entry, 'summary'): content = entry.summary
+        
+        # Extract Image from HTML content or metadata
+        image_url = None
+        if hasattr(entry, 'media_thumbnail'):
+             image_url = entry.media_thumbnail[0]['url']
+        elif '<img src="' in content:
+             match = re.search(r'<img src="(.*?)"', content)
+             if match: image_url = match.group(1)
+
+        # Clean text and swap links
+        clean_body = clean_html(content)
+        final_body = process_text_links(clean_body)
+        
+        caption = f"<b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
+        
+        send_telegram(caption, image_url)
+        
+        # Save memory
+        with open("last_post.txt", "w") as f: f.write(entry.id)
         time.sleep(2)
 
-    print("--- FINISHED SUCCESSFULLY ---")
+    print("--- SUCCESS ---")
 
 if __name__ == "__main__":
     main()
