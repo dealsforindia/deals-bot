@@ -15,13 +15,17 @@ def send_telegram_photo(caption, image_url):
     payload = {"chat_id": CHANNEL_ID, "photo": image_url, "caption": caption, "parse_mode": "HTML"}
     try:
         r = requests.post(url, data=payload)
+        print(f"Telegram Photo Status: {r.status_code}") 
         if r.status_code != 200: send_telegram_text(caption)
-    except: send_telegram_text(caption)
+    except Exception as e:
+        print(f"Photo Error: {e}")
+        send_telegram_text(caption)
 
 def send_telegram_text(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHANNEL_ID, "text": message, "parse_mode": "HTML"}
-    requests.post(url, data=payload)
+    r = requests.post(url, data=payload)
+    print(f"Telegram Text Status: {r.status_code}")
 
 def get_earnkaro_link(deal_url):
     if not EARNKARO_TOKEN: return None
@@ -44,9 +48,21 @@ def extract_image(entry):
 
 def main():
     try:
-        feed = feedparser.parse(requests.get(f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss", headers={"User-Agent": "Mozilla/5.0"}).content)
-        if not feed.entries: return
+        # NEW: Real Browser ID to bypass Reddit blocks
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
         
+        print(f"Checking {url}...")
+        response = requests.get(url, headers=headers)
+        print(f"Reddit Status: {response.status_code}") # Tells us if Reddit blocked us
+        
+        feed = feedparser.parse(response.content)
+        
+        if not feed.entries:
+            print("ERROR: No entries found! (Reddit might be blocking IPs or subreddit is empty)")
+            return
+        
+        print(f"Found {len(feed.entries)} entries.")
         entry = feed.entries[0]
         title = html.unescape(entry.title)
         image_url = extract_image(entry)
@@ -56,10 +72,13 @@ def main():
         
         caption = f"<b>{title}</b>\n\n✅ <b>Link:</b> {final_link}\n\n#Deal #{label}"
         
+        print("Sending to Telegram...")
         if image_url: send_telegram_photo(caption, image_url)
         else: send_telegram_text(caption)
-        print("Success")
-    except Exception as e: print(e)
+        print("Done")
+    except Exception as e: print(f"CRASH: {e}")
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
