@@ -22,8 +22,8 @@ jobs:
           python-version: '3.9'
 
       - name: Install Libraries
-        # We use a specific upgrade flag to ensure clean install
-        run: pip install --upgrade requests feedparser google-generativeai
+        # FIXED: Pinning version 0.8.3 stops the crash caused by the new update
+        run: pip install requests feedparser google-generativeai==0.8.3
 
       - name: Run Deal Bot
         env:
