@@ -2,11 +2,11 @@ name: Deal Hunter
 
 on:
   schedule:
-    - cron: '*/7 * * * *'  # Checks every 5 minutes
+    - cron: '*/7 * * * *'  # Checks every 7 minutes
   workflow_dispatch:       # Allows manual button click
 
 permissions:
-  contents: write          # <--- THIS IS CRITICAL. Allows saving the memory file.
+  contents: write          # Allows saving the memory file
 
 jobs:
   run-bot:
@@ -22,6 +22,7 @@ jobs:
           python-version: '3.9'
 
       - name: Install Libraries
+        # FIXED: Removed 'google-generativeai'. Only installs what you need.
         run: pip install requests feedparser
 
       - name: Run Deal Bot
@@ -35,6 +36,8 @@ jobs:
         run: |
           git config --global user.name "DealBot"
           git config --global user.email "bot@noreply.github.com"
+          # FIXED: Pull latest changes first to prevent "failed to push" errors
+          git pull origin main --rebase || echo "Already up to date"
           git add last_post.txt
           git commit -m "Update memory [skip ci]" || exit 0
           git push
