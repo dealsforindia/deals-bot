@@ -2,7 +2,7 @@ name: Deal Hunter
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Checks every 5 minutes
+    - cron: '*/13 * * * *'  # Checks every 5 minutes
   workflow_dispatch:       # Allows manual button click
 
 permissions:
