@@ -2,11 +2,11 @@ name: Deal Hunter
 
 on:
   schedule:
-    - cron: '*/7 * * * *'  # Checks every 7 minutes
+    - cron: '*/7 * * * *'  # Checks every 5 minutes
   workflow_dispatch:       # Allows manual button click
 
 permissions:
-  contents: write          # CRITICAL: Allows saving the memory file
+  contents: write          # <--- THIS IS CRITICAL. Allows saving the memory file.
 
 jobs:
   run-bot:
@@ -22,15 +22,13 @@ jobs:
           python-version: '3.9'
 
       - name: Install Libraries
-        # FIXED: Pinning version 0.8.3 stops the crash caused by the new update
-        run: pip install requests feedparser google-generativeai==0.8.3
+        run: pip install requests feedparser
 
       - name: Run Deal Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           EARNKARO_TOKEN: ${{ secrets.EARNKARO_TOKEN }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: python bot.py
 
       - name: Save Memory (Commit Changes)
