@@ -28,9 +28,9 @@ def is_junk_hard_filter(title, body):
         "not working", "didn't work", "expired", "fake", "scam",
         "help me", "question", "suggestion", "request",
         "fuck", "shit", "stupid", "worst", "don't buy",
-        "referral code", "refer code", "refer_bot", # Blocks referral spam
-        "codes are t working", # BLOCKS THE SPECIFIC TYPO you saw
-        "parakeet ai", # BLOCKS the specific AI spam
+        "referral code", "refer code", "refer_bot", 
+        "codes are t working", 
+        "parakeet ai", 
         "join the group", "dm me"
     ]
     
@@ -64,7 +64,7 @@ def is_valid_deal_ai(title, body):
     Reply ONLY with "YES" or "NO".
     """
     try:
-        # FIXED: Using 'gemini-pro' to fix the 404 error
+        # Using 'gemini-pro' to fix the 404 error
         model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
         if "NO" in response.text.strip().upper():
@@ -74,7 +74,6 @@ def is_valid_deal_ai(title, body):
         return True
     except Exception as e:
         print(f"⚠️ AI Error: {e}")
-        # Fail-open: If AI breaks, we allow it (but Layer 1 already caught the worst stuff)
         return True
 
 def get_earnkaro_link(deal_url):
@@ -133,8 +132,12 @@ def main():
         except Exception as e:
             print(f"AI Setup Error: {e}")
 
-    try: with open("last_post.txt", "r") as f: last_id = f.read().strip()
-    except: last_id = None
+    # --- FIX: SPLIT LINES TO PREVENT SYNTAX ERROR ---
+    try:
+        with open("last_post.txt", "r") as f:
+            last_id = f.read().strip()
+    except:
+        last_id = None
 
     rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
     try:
@@ -171,7 +174,7 @@ def main():
         elif hasattr(entry, 'media_content') and entry.media_content:
              image_url = entry.media_content[0]['url']
         
-        # Deep Search in HTML (Fixes Roadster Image)
+        # Deep Search in HTML
         if not image_url and content:
              match = re.search(r'<img[^>]+src="([^">]+)"', content)
              if match:
@@ -194,5 +197,4 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # This catch block prevents the "Red X" on GitHub Actions
         print(f"CRITICAL ERROR (But exiting gracefully): {e}")
