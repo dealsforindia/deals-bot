@@ -18,7 +18,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 # --- CONFIGURE AI ---
 if GOOGLE_API_KEY:
     try:
-        # Using the latest model to avoid 404 errors
+        # Fixed: Using the latest model to avoid 404 errors
         genai.configure(api_key=GOOGLE_API_KEY)
     except Exception as e:
         print(f"AI Setup Error: {e}")
@@ -29,14 +29,17 @@ def is_junk_hard_filter(title, body):
     Instantly blocks posts containing specific 'bad' words.
     """
     text = (title + " " + body).lower()
-    # List of words that instantly get a post deleted
+    
+    # These words will INSTANTLY delete the post.
     bad_keywords = [
         "not working", "didn't work", "expired", "fake", "scam",
         "help me", "question", "suggestion", "request",
         "fuck", "shit", "stupid", "worst", "don't buy",
-        "referral code", "refer code", "refer_bot",
-        "codes are t working", "parakeet ai"
+        "referral code", "refer code", "refer_bot", # Blocks referral spam
+        "codes are t working", # Specifically for that BB post
+        "parakeet ai" # Blocks the specific spam
     ]
+    
     for word in bad_keywords:
         if word in text:
             print(f"🚫 Hard Blocked (Keyword: '{word}'): {title}")
@@ -53,8 +56,16 @@ def is_valid_deal_ai(title, body):
     prompt = f"""
     You are a moderator for a Shopping Deals Telegram channel.
     Analyze this Reddit post.
-    Title: {title}\nBody: {body}
-    Answer "NO" if the post is a complaint, rant, discussion, question, or says a code doesn't work.
+    
+    Title: {title}
+    Body: {body}
+
+    Answer "NO" if the post is:
+    - A complaint, rant, or negative review.
+    - A question or discussion.
+    - Saying a code does NOT work.
+    - Referral spam.
+
     Answer "YES" ONLY if it is a working DEAL, LOOT, or DISCOUNT.
     Reply ONLY with "YES" or "NO".
     """
@@ -141,37 +152,37 @@ def main():
         content = entry.content[0].value if hasattr(entry, 'content') else (entry.summary if hasattr(entry, 'summary') else "")
         clean_body = clean_html(content)
         
-        # --- FILTERS ---
+        # --- LAYER 1: HARD FILTER ---
         if is_junk_hard_filter(title, clean_body):
             with open("last_post.txt", "w") as f: f.write(entry.id)
             continue
+
+        # --- LAYER 2: AI FILTER ---
         if not is_valid_deal_ai(title, clean_body):
             with open("last_post.txt", "w") as f: f.write(entry.id)
             continue 
 
         # --- IMPROVED IMAGE FINDER ---
         image_url = None
-        # 1. Check standard RSS thumbnails
+        # Check standard RSS thumbnails
         if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
              image_url = entry.media_thumbnail[0]['url']
-        # 2. Check for full-size media content
         elif hasattr(entry, 'media_content') and entry.media_content:
              image_url = entry.media_content[0]['url']
         
-        # 3. If still no image, use a better regex to find <img src="..."> in HTML content
+        # New: Search for hidden images in the text content
         if not image_url and content:
-             # This regex looks for src="..." inside an <img> tag
              match = re.search(r'<img[^>]+src="([^">]+)"', content)
              if match:
                  temp_url = match.group(1)
-                 # Basic check to ensure it's a valid-looking http link
                  if temp_url.startswith('http'):
                     image_url = temp_url
 
-        # --- PREPARE BODY ---
+        # --- PROCESS & SEND ---
         final_body = process_text_links(clean_body)
         if final_body.lower().startswith(title.lower()):
             final_body = final_body[len(title):].strip().lstrip(" :-")
+        
         caption = f"🔥 <b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
         
         send_telegram(caption, image_url)
