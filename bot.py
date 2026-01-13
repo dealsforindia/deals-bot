@@ -15,70 +15,84 @@ SUBREDDIT = "dealsforindia"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
 
-# --- AI CONFIGURATION ---
-# We use a try-except block to prevent crashing if keys are wrong
+# --- CONFIGURE AI ---
 if GOOGLE_API_KEY:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-    except:
-        model = None
-else:
-    model = None
-
-def is_spam_keywords(text):
-    """
-    Step 1: FAST filter. If these words exist, delete the post immediately.
-    """
-    text = text.lower()
-    bad_words = [
-        "referral", "referal", "invite code", "help me", "question", 
-        "suggestion", "review needed", "any coupon", "coupon code for",
-        "looking for", "does anyone", "is this legit", "fake", "scam"
-    ]
-    for word in bad_words:
-        if word in text:
-            return True
-    return False
-
-def ai_rewrite_and_filter(title, body):
-    """
-    Step 2: AI filter. Rewrites title if good, returns None if spam.
-    """
-    if not model:
-        return title, body # If AI is broken, just post original (fallback)
-
-    try:
-        prompt = f"""
-        You are a strict Deal Bot. Analyze this Reddit post.
-        Title: {title}
-        Body: {body}
-
-        1. IS THIS SPAM? (Spam = Referral codes, Questions, Rants, Discussion).
-           IF YES -> Reply "SKIP"
-        
-        2. IF REAL DEAL -> Rewrite the Title to be catchy (Max 10 words, 1 Emoji).
-           Reply format: "Title: [Your New Title]"
-        """
-        
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        
-        if "SKIP" in text:
-            return None, None
-            
-        if "Title:" in text:
-            new_title = text.split("Title:")[1].strip()
-            return new_title, body
-            
-        return title, body # Fallback
-        
     except Exception as e:
-        print(f"AI Error: {e}")
-        return title, body
+        print(f"AI Setup Error: {e}")
+
+def is_junk_hard_filter(title, body):
+    """
+    LAYER 1: HARD BLOCK
+    Instantly blocks posts containing specific 'bad' words without waiting for AI.
+    """
+    text = (title + " " + body).lower()
+    
+    # If ANY of these words appear, the post is DELETED.
+    bad_keywords = [
+        "not working", "didn't work", "expired", "fake", "scam",
+        "help me", "question", "suggestion", "request",
+        "fuck", "shit", "stupid", "worst", "don't buy",
+        "referral code", "refer code", # Blocks referral spam
+        "codes are t working", # Specifically for the post you hated
+        "refer_bot", # Blocks telegram bot spam links
+        "parakeet ai" # Blocks the specific spam in your screenshot
+    ]
+    
+    for word in bad_keywords:
+        if word in text:
+            print(f"🚫 Hard Blocked (Keyword: '{word}'): {title}")
+            return True # It IS junk
+    
+    return False # Not junk (passed layer 1)
+
+def is_valid_deal_ai(title, body):
+    """
+    LAYER 2: AI CHECK
+    Uses Gemini to analyze context if the Hard Filter didn't catch it.
+    """
+    if not GOOGLE_API_KEY:
+        print("⚠️ No API Key. Skipping AI.")
+        return True 
+
+    prompt = f"""
+    You are a moderator for a Shopping Deals Telegram channel.
+    Analyze this Reddit post.
+
+    Title: {title}
+    Body: {body}
+
+    Answer "NO" if the post is:
+    1. A complaint or rant (e.g., "Flipkart cheated me").
+    2. A discussion or question (e.g., "Is this good?").
+    3. Saying a code does NOT work.
+    4. Just a referral code spam.
+
+    Answer "YES" ONLY if it is a working DEAL, LOOT, or DISCOUNT.
+    
+    Reply ONLY with "YES" or "NO".
+    """
+    
+    try:
+        # FIXED: Changed model name to fix the 404 error
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(prompt)
+        answer = response.text.strip().upper()
+        
+        if "NO" in answer:
+            print(f"🤖 AI Blocked: {title}")
+            return False
+        
+        print(f"✅ AI Approved: {title}")
+        return True
+    except Exception as e:
+        print(f"⚠️ AI Error: {e}")
+        # If AI fails, we allow it (fail-open) BUT the Hard Filter has already run
+        return True
 
 def get_earnkaro_link(deal_url):
-    """Your original money-making link converter."""
+    """Converts link to EarnKaro affiliate link."""
     if not EARNKARO_TOKEN: return deal_url
     
     api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
@@ -96,6 +110,7 @@ def get_earnkaro_link(deal_url):
     return deal_url
 
 def clean_html(raw_html):
+    """Removes HTML tags."""
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     cleantext = html.unescape(cleantext).strip()
@@ -103,13 +118,23 @@ def clean_html(raw_html):
         cleantext = cleantext.split("submitted by")[0].strip()
     return cleantext
 
-def extract_links(text):
-    return re.findall(r'(https?://[^\s"<\]\)]+)', text)
+def process_text_links(text):
+    """Finds URLs and converts them."""
+    urls = re.findall(r'(https?://[^\s"<\]\)]+)', text)
+    unique_urls = sorted(set(urls), key=urls.index)
+    
+    final_text = text
+    
+    for url in unique_urls:
+        if "reddit.com" in url or "preview" in url: continue
+        new_link = get_earnkaro_link(url)
+        if new_link != url:
+            final_text = final_text.replace(url, new_link)
+            
+    return final_text
 
 def send_telegram(caption, image_url=None):
-    # Shorten caption if too long
     if len(caption) > 1000: caption = caption[:990] + "..."
-    
     data = {"chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
     
     if image_url:
@@ -125,10 +150,12 @@ def send_telegram(caption, image_url=None):
     requests.post(url, data=data)
 
 def main():
+    # 1. Read Memory
     try:
         with open("last_post.txt", "r") as f: last_id = f.read().strip()
     except: last_id = None
 
+    # 2. Get Reddit Data
     rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
     try:
         r = requests.get(rss_url, headers=HEADERS)
@@ -143,14 +170,30 @@ def main():
 
     if not new_posts: return
 
+    # 3. Process Posts
     for entry in reversed(new_posts):
-        print(f"Checking: {entry.title}")
         title = entry.title.strip()
         
         content = ""
         if hasattr(entry, 'content'): content = entry.content[0].value
         elif hasattr(entry, 'summary'): content = entry.summary
         
+        clean_body = clean_html(content)
+        
+        # --- LAYER 1: HARD KEYWORD FILTER ---
+        # This will catch 'BB codes not working' instantly.
+        if is_junk_hard_filter(title, clean_body):
+            # Blocked by keywords
+            with open("last_post.txt", "w") as f: f.write(entry.id)
+            continue
+
+        # --- LAYER 2: AI FILTER ---
+        if not is_valid_deal_ai(title, clean_body):
+            # Blocked by AI
+            with open("last_post.txt", "w") as f: f.write(entry.id)
+            continue 
+
+        # --- PREPARE & SEND ---
         image_url = None
         if hasattr(entry, 'media_thumbnail'):
              image_url = entry.media_thumbnail[0]['url']
@@ -158,54 +201,15 @@ def main():
              match = re.search(r'<img src="(.*?)"', content)
              if match: image_url = match.group(1)
 
-        clean_body = clean_html(content)
+        final_body = process_text_links(clean_body)
         
-        # --- FILTER 1: Keyword Check (Fast) ---
-        if is_spam_keywords(title) or is_spam_keywords(clean_body):
-            print("Skipped: Keyword Filter (Referral/Question)")
-            with open("last_post.txt", "w") as f: f.write(entry.id)
-            continue
-            
-        # --- FILTER 2: AI Check (Smart) ---
-        ai_title, ai_body = ai_rewrite_and_filter(title, clean_body)
-        
-        if ai_title is None:
-            print("Skipped: AI Filter (Not a deal)")
-            with open("last_post.txt", "w") as f: f.write(entry.id)
-            continue
+        if final_body.lower().startswith(title.lower()):
+            final_body = final_body[len(title):].strip()
+            final_body = final_body.lstrip(" :-")
 
-        # --- PROCESS LINKS ---
-        raw_links = extract_links(clean_body)
-        if not raw_links and hasattr(entry, 'link'):
-            raw_links = [entry.link]
-            
-        converted_links = []
-        seen_links = set()
-        
-        for url in raw_links:
-            if "reddit.com" in url or "preview" in url: continue
-            if url in seen_links: continue
-            
-            new_link = get_earnkaro_link(url)
-            converted_links.append(new_link)
-            seen_links.add(url)
-
-        # --- SEND ---
-        caption = f"🔥 <b>{ai_title}</b>\n\n"
-        
-        if converted_links:
-            caption += "<b>👇 Grab Deal:</b>\n"
-            for link in converted_links:
-                caption += f"➜ <a href='{link}'>Click Here to Buy</a>\n"
-        else:
-             # Fallback link
-             main_link = get_earnkaro_link(entry.link)
-             caption += f"➜ <a href='{main_link}'>Click Here to Buy</a>\n"
-        
-        caption += "\n#Deal #Loot"
+        caption = f"🔥 <b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
         
         send_telegram(caption, image_url)
-        print(f"Posted: {ai_title}")
         
         with open("last_post.txt", "w") as f: f.write(entry.id)
         time.sleep(2)
