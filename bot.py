@@ -11,63 +11,65 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-
-# TARGET SUBREDDIT
 SUBREDDIT = "dealsforindia"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
 
-# --- AI CONFIGURATION ---
+# --- AI SETUP ---
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
 
-def analyze_and_rewrite(title, body):
+def ai_spam_check(title, body):
     """
-    1. Checks if the post is 'useless' (question/rant).
-    2. If it is a real deal, rewrites it.
+    Returns (True, None, None) if SPAM.
+    Returns (False, NewTitle, NewSummary) if VALID DEAL.
     """
     if not GOOGLE_API_KEY:
-        return title, body # Fallback if no AI key
+        return False, title, body # No AI? Process everything (unsafe mode)
 
     try:
-        # Strict prompt to filter spam
+        # STRICT PROMPT to kill spam
         prompt = f"""
-        Act as a strict Deal Moderator. Analyze this Reddit post.
+        Analyze this Reddit post for a Deal Channel.
         
-        Title: {title}
-        Body: {body}
+        Input Title: {title}
+        Input Body: {body}
 
-        1. Is this a Help Request, Question, Rant, or Discussion? (e.g. "Where to buy?", "Review needed", "Is this good?").
-           IF YES -> Reply ONLY with the word "SKIP".
+        1. IS THIS SPAM? 
+           (Spam = Referral codes, "Help me find", "Is this legit?", Questions, Rants, Discussion, "Coupon needed").
+           IF YES -> Reply ONLY "SKIP".
         
-        2. Is this a real Shopping Deal/Sale/Loot?
-           IF YES -> Rewrite it for Telegram:
-           - Line 1: Catchy Title (max 10 words, 1 emoji).
-           - Line 2: Short Summary (max 15 words).
-           - Do NOT include links.
+        2. IF IT IS A REAL DEAL:
+           Reply in this format:
+           Title: [Catchy Title with 1 Emoji]
+           Summary: [Short summary under 15 words]
         """
         
         response = model.generate_content(prompt)
         text = response.text.strip()
         
-        if "SKIP" in text:
-            return None, None # AI says ignore this post
-
-        lines = [l for l in text.split('\n') if l.strip()]
-        if len(lines) >= 2:
-            new_title = lines[0].replace("Title:", "").strip()
-            new_summary = lines[1].replace("Summary:", "").strip()
-            return new_title, new_summary
-        else:
-            return title, body # AI format failed, use original
+        if "SKIP" in text or "Referral" in text or "referral" in text:
+            return True, None, None
             
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return title, body
+        # Parse the AI Rewrite
+        lines = [l for l in text.split('\n') if l.strip()]
+        new_title = title
+        new_summary = body
+        
+        for line in lines:
+            if line.startswith("Title:"):
+                new_title = line.replace("Title:", "").strip()
+            elif line.startswith("Summary:"):
+                new_summary = line.replace("Summary:", "").strip()
+                
+        return False, new_title, new_summary
+
+    except Exception:
+        return False, title, body # On error, allow post
 
 def get_earnkaro_link(deal_url):
-    """Converts link using your original logic."""
+    """Converts link. Returns ORIGINAL link if conversion fails."""
     if not EARNKARO_TOKEN: return deal_url
     
     api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
@@ -85,7 +87,7 @@ def get_earnkaro_link(deal_url):
     return deal_url
 
 def clean_html(raw_html):
-    """Removes HTML tags."""
+    """Removes HTML and junk text."""
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     cleantext = html.unescape(cleantext).strip()
@@ -93,18 +95,9 @@ def clean_html(raw_html):
         cleantext = cleantext.split("submitted by")[0].strip()
     return cleantext
 
-def extract_and_convert_links(text):
-    """Finds links in body and converts them."""
-    urls = re.findall(r'(https?://[^\s"<\]\)]+)', text)
-    unique_urls = sorted(set(urls), key=urls.index)
-    
-    links_map = []
-    for url in unique_urls:
-        if "reddit.com" in url or "preview" in url: continue
-        new_link = get_earnkaro_link(url)
-        links_map.append((url, new_link))
-        
-    return links_map
+def extract_links(text):
+    """Finds all links in the text."""
+    return re.findall(r'(https?://[^\s"<\]\)]+)', text)
 
 def send_telegram(caption, image_url=None):
     if len(caption) > 1000: caption = caption[:990] + "..."
@@ -149,6 +142,7 @@ def main():
         if hasattr(entry, 'content'): content = entry.content[0].value
         elif hasattr(entry, 'summary'): content = entry.summary
         
+        # Image extraction
         image_url = None
         if hasattr(entry, 'media_thumbnail'):
              image_url = entry.media_thumbnail[0]['url']
@@ -158,29 +152,40 @@ def main():
 
         clean_body = clean_html(content)
         
-        # 1. AI SPAM CHECK & REWRITE
-        ai_title, ai_summary = analyze_and_rewrite(title, clean_body)
+        # 1. AI CHECK (SPAM FILTER)
+        # This will filter out referral codes, questions, and non-deals
+        is_spam, ai_title, ai_summary = ai_spam_check(title, clean_body)
         
-        # If AI returns None, it is a useless post -> SKIP
-        if ai_title is None:
-            print("Skipping: Not a deal.")
+        if is_spam:
+            print("Skipped: Detected as Spam/Referral/Question")
+            # Mark as read so we don't check it again
             with open("last_post.txt", "w") as f: f.write(entry.id)
-            continue 
+            continue
 
-        # 2. CONVERT LINKS
-        links_map = extract_and_convert_links(clean_body)
+        # 2. LINK PROCESSING (On original body to ensure we catch the real link)
+        raw_links = extract_links(clean_body)
+        if not raw_links and hasattr(entry, 'link'):
+            raw_links = [entry.link]
+            
+        converted_links = []
+        seen_links = set()
         
+        for url in raw_links:
+            if "reddit.com" in url or "preview" in url: continue
+            if url in seen_links: continue
+            
+            new_link = get_earnkaro_link(url)
+            converted_links.append(new_link)
+            seen_links.add(url)
+
         # 3. BUILD CAPTION
         caption = f"🔥 <b>{ai_title}</b>\n\n{ai_summary}\n\n"
         
-        if links_map:
+        if converted_links:
             caption += "<b>👇 Grab Deal:</b>\n"
-            for orig, converted in links_map:
-                 caption += f"➜ <a href='{converted}'>Click Here to Buy</a>\n"
-        else:
-            main_link = get_earnkaro_link(entry.link)
-            caption += f"➜ <a href='{main_link}'>Click Here to Buy</a>\n"
-
+            for link in converted_links:
+                caption += f"➜ <a href='{link}'>Click Here to Buy</a>\n"
+        
         caption += "\n#Deal #Loot"
         
         send_telegram(caption, image_url)
