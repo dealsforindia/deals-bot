@@ -22,7 +22,7 @@ jobs:
           python-version: '3.9'
 
       - name: Install Libraries
-        # Added google-generativeai here
+        # Installs the AI library
         run: pip install requests feedparser google-generativeai
 
       - name: Run Deal Bot
