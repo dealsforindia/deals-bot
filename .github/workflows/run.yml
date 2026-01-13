@@ -6,7 +6,7 @@ on:
   workflow_dispatch:       # Allows manual button click
 
 permissions:
-  contents: write          # Allows saving the memory file
+  contents: write          # CRITICAL: Allows saving the memory file
 
 jobs:
   run-bot:
@@ -22,8 +22,8 @@ jobs:
           python-version: '3.9'
 
       - name: Install Libraries
-        # Installs the AI library
-        run: pip install requests feedparser google-generativeai
+        # We use a specific upgrade flag to ensure clean install
+        run: pip install --upgrade requests feedparser google-generativeai
 
       - name: Run Deal Bot
         env:
