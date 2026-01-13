@@ -2,7 +2,7 @@ name: Deal Hunter
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # I changed this to 5 mins (fastest allowed)
+    - cron: '*/5 * * * *'  # Runs every 5 minutes (Maximum Speed)
   workflow_dispatch:
 
 permissions:
@@ -27,11 +27,10 @@ jobs:
 
       - name: Run Deal Bot
         env:
-          # These match your screenshot exactly
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           EARNKARO_TOKEN: ${{ secrets.EARNKARO_TOKEN }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }} # <--- Added this
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: python bot.py
 
       - name: Save Memory
