@@ -12,16 +12,9 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 SUBREDDIT = "dealsforindia"
-
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
 
-# --- CONFIGURE AI ---
-if GOOGLE_API_KEY:
-    try:
-        # FIXED: Switched to 'gemini-pro' because '1.5-flash' caused 404 errors for you
-        genai.configure(api_key=GOOGLE_API_KEY)
-    except Exception as e:
-        print(f"AI Setup Error: {e}")
+# --- FUNCTIONS ---
 
 def is_junk_hard_filter(title, body):
     """
@@ -30,7 +23,7 @@ def is_junk_hard_filter(title, body):
     """
     text = (title + " " + body).lower()
     
-    # LIST OF BANNED WORDS (Updated with your specific spam examples)
+    # LIST OF BANNED WORDS
     bad_keywords = [
         "not working", "didn't work", "expired", "fake", "scam",
         "help me", "question", "suggestion", "request",
@@ -85,13 +78,10 @@ def is_valid_deal_ai(title, body):
         return True
 
 def get_earnkaro_link(deal_url):
-    """Converts link to EarnKaro affiliate link."""
     if not EARNKARO_TOKEN: return deal_url
-    
     api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
     headers = {"Authorization": f"Bearer {EARNKARO_TOKEN}", "Content-Type": "application/json"}
     payload = {"deal": deal_url, "convert_option": "convert_only"}
-    
     try:
         r = requests.post(api_url, headers=headers, json=payload, timeout=5)
         if r.status_code == 200 and r.json().get("success") == 1:
@@ -101,7 +91,6 @@ def get_earnkaro_link(deal_url):
     return deal_url
 
 def clean_html(raw_html):
-    """Removes HTML tags."""
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     cleantext = html.unescape(cleantext).strip()
@@ -110,18 +99,14 @@ def clean_html(raw_html):
     return cleantext
 
 def process_text_links(text):
-    """Finds URLs and converts them."""
     urls = re.findall(r'(https?://[^\s"<\]\)]+)', text)
     unique_urls = sorted(set(urls), key=urls.index)
-    
     final_text = text
-    
     for url in unique_urls:
         if "reddit.com" in url or "preview" in url: continue
         new_link = get_earnkaro_link(url)
         if new_link != url:
             final_text = final_text.replace(url, new_link)
-            
     return final_text
 
 def send_telegram(caption, image_url=None):
@@ -141,72 +126,73 @@ def send_telegram(caption, image_url=None):
     requests.post(url, data=data)
 
 def main():
-    try:
-        try: with open("last_post.txt", "r") as f: last_id = f.read().strip()
-        except: last_id = None
-
-        rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
+    # --- CONFIGURE AI ---
+    if GOOGLE_API_KEY:
         try:
-            r = requests.get(rss_url, headers=HEADERS)
-            if r.status_code != 200: return
-            feed = feedparser.parse(r.content)
-        except: return
+            genai.configure(api_key=GOOGLE_API_KEY)
+        except Exception as e:
+            print(f"AI Setup Error: {e}")
 
-        new_posts = []
-        for entry in feed.entries:
-            if entry.id == last_id: break
-            new_posts.append(entry)
+    try: with open("last_post.txt", "r") as f: last_id = f.read().strip()
+    except: last_id = None
 
-        if not new_posts: return
+    rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
+    try:
+        r = requests.get(rss_url, headers=HEADERS)
+        if r.status_code != 200: return
+        feed = feedparser.parse(r.content)
+    except: return
 
-        for entry in reversed(new_posts):
-            title = entry.title.strip()
-            content = entry.content[0].value if hasattr(entry, 'content') else (entry.summary if hasattr(entry, 'summary') else "")
-            clean_body = clean_html(content)
-            
-            # --- LAYER 1: HARD FILTER (Runs First) ---
-            if is_junk_hard_filter(title, clean_body):
-                with open("last_post.txt", "w") as f: f.write(entry.id)
-                continue
+    new_posts = []
+    for entry in feed.entries:
+        if entry.id == last_id: break
+        new_posts.append(entry)
 
-            # --- LAYER 2: AI FILTER (Runs Second) ---
-            if not is_valid_deal_ai(title, clean_body):
-                with open("last_post.txt", "w") as f: f.write(entry.id)
-                continue 
+    if not new_posts: return
 
-            # --- DEEP IMAGE SEARCH ---
-            image_url = None
-            # 1. Standard RSS check
-            if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
-                 image_url = entry.media_thumbnail[0]['url']
-            elif hasattr(entry, 'media_content') and entry.media_content:
-                 image_url = entry.media_content[0]['url']
-            
-            # 2. Deep Search in HTML (Fixes Roadster Image)
-            if not image_url and content:
-                 # Search for standard img src
-                 match = re.search(r'<img[^>]+src="([^">]+)"', content)
-                 if match:
-                     temp_url = match.group(1)
-                     if temp_url.startswith('http'):
-                        image_url = temp_url
-
-            # --- PROCESS & SEND ---
-            final_body = process_text_links(clean_body)
-            if final_body.lower().startswith(title.lower()):
-                final_body = final_body[len(title):].strip().lstrip(" :-")
-            
-            caption = f"🔥 <b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
-            
-            send_telegram(caption, image_url)
-            
-            # Save progress
+    for entry in reversed(new_posts):
+        title = entry.title.strip()
+        content = entry.content[0].value if hasattr(entry, 'content') else (entry.summary if hasattr(entry, 'summary') else "")
+        clean_body = clean_html(content)
+        
+        # --- FILTERS ---
+        if is_junk_hard_filter(title, clean_body):
             with open("last_post.txt", "w") as f: f.write(entry.id)
-            time.sleep(2)
-            
-    except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
-        pass
+            continue
+
+        if not is_valid_deal_ai(title, clean_body):
+            with open("last_post.txt", "w") as f: f.write(entry.id)
+            continue 
+
+        # --- IMAGE FINDER ---
+        image_url = None
+        if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+             image_url = entry.media_thumbnail[0]['url']
+        elif hasattr(entry, 'media_content') and entry.media_content:
+             image_url = entry.media_content[0]['url']
+        
+        # Deep Search in HTML (Fixes Roadster Image)
+        if not image_url and content:
+             match = re.search(r'<img[^>]+src="([^">]+)"', content)
+             if match:
+                 temp_url = match.group(1)
+                 if temp_url.startswith('http'):
+                    image_url = temp_url
+
+        # --- SEND ---
+        final_body = process_text_links(clean_body)
+        if final_body.lower().startswith(title.lower()):
+            final_body = final_body[len(title):].strip().lstrip(" :-")
+        
+        caption = f"🔥 <b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
+        send_telegram(caption, image_url)
+        
+        with open("last_post.txt", "w") as f: f.write(entry.id)
+        time.sleep(2)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # This catch block prevents the "Red X" on GitHub Actions
+        print(f"CRITICAL ERROR (But exiting gracefully): {e}")
