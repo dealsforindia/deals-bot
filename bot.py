@@ -10,7 +10,7 @@ import google.generativeai as genai
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") # You added this to secrets
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 SUBREDDIT = "dealsforindia"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
@@ -20,24 +20,29 @@ if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
 
 def is_valid_deal_ai(title, body):
-    """Asks Gemini if the post is a valid deal or just junk."""
+    """
+    Uses Gemini AI to check if a post is a valid deal.
+    Filters out rants, questions, and 'not working' complaints.
+    """
     if not GOOGLE_API_KEY:
-        return True # If no key, assume it's valid to be safe
+        print("⚠️ No Google API Key found. Skipping AI check.")
+        return True 
 
-    # This prompt is strictly designed to block the images you showed me
+    # Strict prompt to catch the specific junk posts you showed me
     prompt = f"""
-    You are a moderator for a strict 'Shopping Deals' Telegram channel.
-    Analyze this Reddit post to decide if it should be posted.
-    
-    Post Title: {title}
-    Post Body: {body}
+    You are a strict moderator for a 'Shopping Deals' channel. 
+    Analyze this Reddit post.
 
-    RULES:
-    1. REPLY "YES" ONLY if this is a valid shopping deal, discount, coupon, or price drop.
-    2. REPLY "NO" if this is a RANT or COMPLAINT (e.g., "Fuck Flipkart", "Price didn't drop").
-    3. REPLY "NO" if this is a QUESTION or DISCUSSION (e.g., "Is this good?", "Help me").
-    4. REPLY "NO" if it says a code is NOT working (e.g., "Codes are not working for me").
-    5. REPLY "NO" if it is spam or irrelevant.
+    Title: {title}
+    Body: {body}
+
+    Your Task:
+    Reply "YES" if this is a valid deal, offer, discount, or freebie.
+    Reply "NO" if it falls into any of these 'JUNK' categories:
+    - Rants or complaints (e.g., "Flipkart cheated me", "Price didn't drop").
+    - "Help me" or "Question" posts (e.g., "Is this good?", "Suggest a phone").
+    - "Code not working" posts (e.g., "BB codes are not working", "Coupon invalid").
+    - Discussion threads without a specific deal link.
 
     Reply ONLY with "YES" or "NO".
     """
@@ -47,16 +52,20 @@ def is_valid_deal_ai(title, body):
         response = model.generate_content(prompt)
         answer = response.text.strip().upper()
         
+        # If the AI says NO, we block it.
         if "NO" in answer:
-            print(f"AI Filtered out: {title}")
+            print(f"🚫 AI Blocked: {title}")
             return False
+        
+        print(f"✅ AI Approved: {title}")
         return True
     except Exception as e:
-        print(f"AI Error: {e}")
-        return True # If AI fails, let the post through so we don't miss deals
+        print(f"⚠️ AI Error: {e}")
+        # If AI fails (server error), we default to True so we don't miss deals
+        return True
 
 def get_earnkaro_link(deal_url):
-    """Converts link. Returns ORIGINAL link if conversion fails."""
+    """Converts link to EarnKaro affiliate link."""
     if not EARNKARO_TOKEN: return deal_url
     
     api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
@@ -74,7 +83,7 @@ def get_earnkaro_link(deal_url):
     return deal_url
 
 def clean_html(raw_html):
-    """Removes HTML and junk text."""
+    """Removes HTML tags and cleans up text."""
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     cleantext = html.unescape(cleantext).strip()
@@ -83,7 +92,7 @@ def clean_html(raw_html):
     return cleantext
 
 def process_text_links(text):
-    """Finds links and replaces them."""
+    """Finds URLs in text and converts them to affiliate links."""
     urls = re.findall(r'(https?://[^\s"<\]\)]+)', text)
     unique_urls = sorted(set(urls), key=urls.index)
     
@@ -98,6 +107,7 @@ def process_text_links(text):
     return final_text
 
 def send_telegram(caption, image_url=None):
+    """Sends the deal to Telegram."""
     if len(caption) > 1000: caption = caption[:990] + "..."
     data = {"chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
     
@@ -114,24 +124,34 @@ def send_telegram(caption, image_url=None):
     requests.post(url, data=data)
 
 def main():
+    # 1. Read the last processed post ID
     try:
         with open("last_post.txt", "r") as f: last_id = f.read().strip()
     except: last_id = None
 
+    # 2. Fetch Reddit RSS Feed
     rss_url = f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss"
     try:
         r = requests.get(rss_url, headers=HEADERS)
-        if r.status_code != 200: return
+        if r.status_code != 200: 
+            print("Error fetching RSS feed")
+            return
         feed = feedparser.parse(r.content)
-    except: return
+    except Exception as e: 
+        print(f"Error parsing feed: {e}")
+        return
 
     new_posts = []
+    # 3. Collect only new posts
     for entry in feed.entries:
         if entry.id == last_id: break
         new_posts.append(entry)
 
-    if not new_posts: return
+    if not new_posts: 
+        print("No new posts found.")
+        return
 
+    # 4. Process new posts (Oldest to Newest)
     for entry in reversed(new_posts):
         title = entry.title.strip()
         
@@ -141,13 +161,13 @@ def main():
         
         clean_body = clean_html(content)
         
-        # --- AI CHECK HERE ---
-        # Before doing any link processing, we ask AI if this post is garbage.
+        # --- AI CHECK ---
+        # If AI says it's junk, save ID and skip posting
         if not is_valid_deal_ai(title, clean_body):
-            # If AI says NO, we save the ID (so we don't check it again) but we DO NOT send it.
             with open("last_post.txt", "w") as f: f.write(entry.id)
             continue 
 
+        # --- PROCESS IMAGES & LINKS ---
         image_url = None
         if hasattr(entry, 'media_thumbnail'):
              image_url = entry.media_thumbnail[0]['url']
@@ -157,14 +177,18 @@ def main():
 
         final_body = process_text_links(clean_body)
         
+        # Remove body if it's identical to title (deduplication)
         if final_body.lower().startswith(title.lower()):
             final_body = final_body[len(title):].strip()
             final_body = final_body.lstrip(" :-")
 
         caption = f"🔥 <b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
         
+        # --- SEND TO TELEGRAM ---
+        print(f"Sending: {title}")
         send_telegram(caption, image_url)
         
+        # Update last_post.txt immediately after sending
         with open("last_post.txt", "w") as f: f.write(entry.id)
         time.sleep(2)
 
