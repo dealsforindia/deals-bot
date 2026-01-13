@@ -10,7 +10,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
 SUBREDDIT = "dealsforindia"
-
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
 
 def get_earnkaro_link(deal_url):
@@ -97,24 +96,29 @@ def main():
         if hasattr(entry, 'content'): content = entry.content[0].value
         elif hasattr(entry, 'summary'): content = entry.summary
         
-        image_url = None
-        if hasattr(entry, 'media_thumbnail'):
-             image_url = entry.media_thumbnail[0]['url']
-        elif '<img src="' in content:
-             match = re.search(r'<img src="(.*?)"', content)
-             if match: image_url = match.group(1)
-
         clean_body = clean_html(content)
+        
+        # --- IMAGE FINDER ---
+        image_url = None
+        if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+             image_url = entry.media_thumbnail[0]['url']
+        elif hasattr(entry, 'media_content') and entry.media_content:
+             image_url = entry.media_content[0]['url']
+        
+        # Deep Search in HTML (Catches images inside text posts)
+        if not image_url and content:
+             match = re.search(r'<img[^>]+src="([^">]+)"', content)
+             if match:
+                 temp_url = match.group(1)
+                 if temp_url.startswith('http'):
+                    image_url = temp_url
+
         final_body = process_text_links(clean_body)
         
-        # --- SMART DEDUPLICATION ---
-        # If the body text is almost the same as the title, remove it to avoid repetition.
         if final_body.lower().startswith(title.lower()):
             final_body = final_body[len(title):].strip()
-            # Remove any left-over punctuation like ": " or "- "
             final_body = final_body.lstrip(" :-")
 
-        # --- JIOMART STYLE TITLE ---
         caption = f"🔥 <b>{title}</b>\n\n{final_body}\n\n#Deal #Loot"
         
         send_telegram(caption, image_url)
