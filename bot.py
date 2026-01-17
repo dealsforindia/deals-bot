@@ -10,6 +10,12 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
 SUBREDDIT = "dealsforindia"
+
+# Maximum age of a post in seconds.
+# 7200 seconds = 2 Hours.
+# If a post is older than 2 hours, it is considered "stale" and skipped to avoid spamming old history.
+MAX_POST_AGE = 7200 
+
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
 
 def get_earnkaro_link(deal_url):
@@ -90,6 +96,17 @@ def main():
     if not new_posts: return
 
     for entry in reversed(new_posts):
+        
+        # --- SPAM PROTECTION (TIME FILTER) ---
+        if hasattr(entry, 'published_parsed'):
+            post_timestamp = time.mktime(entry.published_parsed)
+            # Check if post is older than MAX_POST_AGE (2 hours)
+            if time.time() - post_timestamp > MAX_POST_AGE:
+                # Update memory so we don't process this again, but DON'T send to Telegram
+                with open("last_post.txt", "w") as f: f.write(entry.id)
+                continue 
+        # -------------------------------------
+
         title = entry.title.strip()
         
         content = ""
