@@ -9,7 +9,7 @@ import time
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 EARNKARO_TOKEN = os.environ.get("EARNKARO_TOKEN")
-SUBREDDIT = " dealsforindia + dealsoffersfreebies "
+SUBREDDIT = "dealsforindia"
 
 # Maximum age of a post in seconds.
 # 7200 seconds = 2 Hours.
