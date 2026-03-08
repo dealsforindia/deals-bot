@@ -17,7 +17,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUBREDDITS = [
     "dealsforindia",
     "dealsoffersfreebies",
-    "lootdealsforindia",
+    "Lootdealsforindia",
 ]
 
 # Maximum age of a post in seconds (2 hours)
