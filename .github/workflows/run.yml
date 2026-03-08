@@ -6,7 +6,7 @@ on:
   workflow_dispatch:       # Allows manual button click
 
 permissions:
-  contents: write          # Allows saving the memory file
+  contents: write          # Allows saving the memory files
 
 jobs:
   run-bot:
@@ -22,7 +22,6 @@ jobs:
           python-version: '3.9'
 
       - name: Install Libraries
-        # FIXED: Removed 'google-generativeai'. Only installs what you need.
         run: pip install requests feedparser
 
       - name: Run Deal Bot
@@ -30,14 +29,14 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           EARNKARO_TOKEN: ${{ secrets.EARNKARO_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python bot.py
 
       - name: Save Memory (Commit Changes)
         run: |
           git config --global user.name "DealBot"
           git config --global user.email "bot@noreply.github.com"
-          # FIXED: Pull latest changes first to prevent "failed to push" errors
           git pull origin main --rebase || echo "Already up to date"
-          git add last_post.txt
+          git add last_post_dealsforindia.txt last_post_dealsoffersfreebies.txt last_post_lootdealsforindia.txt seen_deals.json
           git commit -m "Update memory [skip ci]" || exit 0
           git push
