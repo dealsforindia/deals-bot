@@ -8,9 +8,6 @@ on:
 permissions:
   contents: write
 
-# This is the most important fix for duplicate posts:
-# Never allow two runs at the same time.
-# If a run is already going, the next one WAITS instead of starting fresh.
 concurrency:
   group: deal-hunter
   cancel-in-progress: false
@@ -46,32 +43,39 @@ jobs:
           git config --global user.name "DealBot"
           git config --global user.email "bot@noreply.github.com"
 
-          # Step 1: Back up the freshly written memory files BEFORE any git operation
+          # Step 1: Back up fresh memory files BEFORE any git operation
           cp seen_deals.json /tmp/seen_deals.json 2>/dev/null || true
           cp last_post_dealsforindia.txt /tmp/last_post_dealsforindia.txt 2>/dev/null || true
           cp last_post_dealsoffersfreebies.txt /tmp/last_post_dealsoffersfreebies.txt 2>/dev/null || true
           cp last_post_Lootdealsforindia.txt /tmp/last_post_Lootdealsforindia.txt 2>/dev/null || true
 
-          # Step 2: Pull latest remote changes (in case another run pushed while we ran)
+          # Step 2: Pull latest remote changes
           git pull origin main --rebase || true
 
-          # Step 3: Restore our fresh memory files on top of the pulled state
+          # Step 3: Restore our fresh memory files on top
           cp /tmp/seen_deals.json seen_deals.json 2>/dev/null || true
           cp /tmp/last_post_dealsforindia.txt last_post_dealsforindia.txt 2>/dev/null || true
           cp /tmp/last_post_dealsoffersfreebies.txt last_post_dealsoffersfreebies.txt 2>/dev/null || true
           cp /tmp/last_post_Lootdealsforindia.txt last_post_Lootdealsforindia.txt 2>/dev/null || true
 
-          # Step 4: Stage memory files
+          # Step 4: Create files if they don't exist yet (very first run)
+          [ -f seen_deals.json ] || echo "[]" > seen_deals.json
+          [ -f last_post_dealsforindia.txt ] || echo "" > last_post_dealsforindia.txt
+          [ -f last_post_dealsoffersfreebies.txt ] || echo "" > last_post_dealsoffersfreebies.txt
+          [ -f last_post_Lootdealsforindia.txt ] || echo "" > last_post_Lootdealsforindia.txt
+
+          # Step 5: Stage all memory files
           git add seen_deals.json last_post_dealsforindia.txt last_post_dealsoffersfreebies.txt last_post_Lootdealsforindia.txt
 
-          # Step 5: Only commit if something actually changed
+          # Step 6: Only commit if something changed
           git diff --staged --quiet && echo "No changes to commit" && exit 0
 
           git commit -m "Update memory [skip ci]"
 
-          # Step 6: Push with retry loop
+          # Step 7: Push with retry
           for i in 1 2 3; do
             git push origin main && echo "Push successful" && break
             echo "Attempt $i failed, pulling and retrying..."
+            sleep 5
             git pull origin main --rebase || true
           done
