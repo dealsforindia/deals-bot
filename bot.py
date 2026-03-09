@@ -3,7 +3,6 @@ import re
 import html
 import time
 import json
-import base64
 import hashlib
 import requests
 import feedparser
@@ -26,7 +25,7 @@ TELEGRAM_TIMEOUT = 10
 
 # Compliant API Header to prevent Reddit IP bans
 HEADERS = {
-    "User-Agent": "Python:DealsForIndiaTracker:v1.0 (by Deals For India)"
+    "User-Agent": "Python:DealsForIndiaTracker:v2.1 (by Deals For India)"
 }
 
 # --- GEMINI RATE LIMIT TRACKER ---
@@ -55,8 +54,7 @@ def is_duplicate_url(url):
             data = r.json()
             if time.time() - data.get("timestamp", 0) < (48 * 60 * 60):
                 return True
-    except Exception as e: 
-        print(f"[FIREBASE READ ERROR] {e}")
+    except: pass
     return False
 
 def save_seen_deal(url):
@@ -65,8 +63,7 @@ def save_seen_deal(url):
     endpoint = f"{FIREBASE_URL.rstrip('/')}/seen_deals/{url_hash}.json?auth={FIREBASE_SECRET}"
     try:
         requests.put(endpoint, json={"url": url, "timestamp": time.time()}, timeout=5)
-    except Exception as e: 
-        print(f"[FIREBASE WRITE ERROR] {e}")
+    except: pass
 
 def get_last_post(subreddit):
     if not FIREBASE_URL or not FIREBASE_SECRET: return None
@@ -107,7 +104,7 @@ def clean_html_text(raw_html):
 def get_link_from_comments(subreddit, post_id):
     url = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}/.json?limit=10&sort=top"
     try:
-        time.sleep(2) # Mandatory 2-second API safety pause
+        time.sleep(2)
         r = requests.get(url, headers=HEADERS, timeout=10)
         if r.status_code != 200: return []
         data = r.json()
@@ -133,10 +130,17 @@ def get_earnkaro_link(deal_url):
     try:
         api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
         headers = {"Authorization": f"Bearer {EARNKARO_TOKEN}", "Content-Type": "application/json"}
-        r = requests.post(api_url, headers=headers, json={"deal": deal_url, "convert_option": "convert_only"}, timeout=5)
-        if r.status_code == 200 and r.json().get("success") == 1:
-            data = r.json().get("data")
-            if data and "We could not locate" not in str(data): return data
+        r = requests.post(api_url, headers=headers, json={"deal": deal_url, "convert_option": "convert_only"}, timeout=8)
+        
+        if r.status_code == 200:
+            resp = r.json()
+            if resp.get("success") == 1:
+                data = resp.get("data")
+                if data and "We could not locate" not in str(data): return data
+            else:
+                print(f"[EARNKARO REJECTED] {resp}")
+        else:
+            print(f"[EARNKARO API DOWN] HTTP {r.status_code}")
     except Exception as e: 
         print(f"[EARNKARO ERROR] {e}")
     return deal_url
@@ -182,15 +186,29 @@ def process_with_gemini(title, body, product_links):
         
     return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": body[:300], "category_tags": ""}
 
-def send_telegram(caption, buy_url=None):
+def send_telegram(caption, buy_url=None, image_url=None):
     if not caption: return
     caption = re.sub(r'<(?!/?(b|i|u|s|a|code|pre)\b)[^>]*>', '', caption[:1020])
     
-    data = {"chat_id": CHANNEL_ID, "parse_mode": "HTML", "text": caption}
+    data = {"chat_id": CHANNEL_ID, "parse_mode": "HTML"}
     if buy_url and buy_url.startswith("http"):
         data["reply_markup"] = json.dumps({"inline_keyboard": [[{"text": "🛒 Buy Now", "url": buy_url}]]})
         
+    # 1. Try sending Photo
+    if image_url:
+        try:
+            photo_data = dict(data)
+            photo_data["caption"] = caption
+            photo_data["photo"] = image_url
+            r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=photo_data, timeout=TELEGRAM_TIMEOUT)
+            if r.status_code == 200: return # Success!
+            print(f"[TELEGRAM PHOTO ERROR] {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[TELEGRAM PHOTO EXCEPTION] {e}")
+
+    # 2. Fallback to Text Message if image fails or doesn't exist
     try:
+        data["text"] = caption
         r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=data, timeout=TELEGRAM_TIMEOUT)
         if r.status_code != 200:
             data["parse_mode"] = ""
@@ -232,6 +250,26 @@ def process_subreddit(subreddit):
         content = getattr(entry, 'content', [{'value': ''}])[0].value if hasattr(entry, 'content') else getattr(entry, 'summary', '')
         body = clean_html_text(content)
         
+        # --- IMAGE EXTRACTION (WITH URL CLEANER) ---
+        image_url = None
+        try:
+            if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+                image_url = entry.media_thumbnail[0].get('url')
+            elif hasattr(entry, 'media_content') and entry.media_content:
+                image_url = entry.media_content[0].get('url')
+            
+            if not image_url and content:
+                match = re.search(r'<img[^>]+src="([^">]+)"', content)
+                if match:
+                    image_url = match.group(1)
+            
+            # The Fix: Decode URL &amp; so Telegram can process it properly
+            if image_url:
+                image_url = html.unescape(image_url)
+                if not image_url.startswith("http"):
+                    image_url = None
+        except: pass
+
         # 1. Look for links in the main post
         product_links = extract_product_links(content)
         if hasattr(entry, 'link') and entry.link and "reddit.com" not in entry.link:
@@ -269,7 +307,7 @@ def process_subreddit(subreddit):
         buy_url = get_earnkaro_link(product_links[0])
         
         # 6. Send and Save to Firebase
-        send_telegram("\n\n".join(lines), buy_url=buy_url)
+        send_telegram("\n\n".join(lines), buy_url=buy_url, image_url=image_url)
         save_seen_deal(product_links[0])
         set_last_post(subreddit, entry_id)
         
