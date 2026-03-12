@@ -12,6 +12,10 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    
+    # This forces the older actions to use Node 24 and removes the warning
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout Code
