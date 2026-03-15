@@ -17,13 +17,12 @@ FIREBASE_URL = os.environ.get("FIREBASE_URL")
 FIREBASE_SECRET = os.environ.get("FIREBASE_SECRET")
 
 SUBREDDITS = ["dealsforindia", "dealsoffersfreebies", "Lootdealsforindia"]
-MAX_POST_AGE = 7200                # 2 hours
-MAX_POSTS_PER_SUBREDDIT = 5        # Flood protection
+MAX_POST_AGE = 7200
+MAX_POSTS_PER_SUBREDDIT = 5
 GEMINI_TIMEOUT = 15
 RSS_TIMEOUT = 10
 TELEGRAM_TIMEOUT = 10
 
-# Compliant API Header to prevent Reddit IP bans
 HEADERS = {
     "User-Agent": "Python:DealsForIndiaTracker:v2.1 (by Deals For India)"
 }
@@ -122,15 +121,55 @@ def get_link_from_comments(subreddit, post_id):
         print(f"[COMMENT FETCH ERROR] {e}")
     return []
 
-# --- EXTERNAL APIS ---
+# --- RESOLVE SHORT URLS ---
+def resolve_url(url):
+    """Follow redirects to get the final URL so we can detect the real domain."""
+    try:
+        r = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=6)
+        final = r.url
+        print(f"[RESOLVE] {url[:60]} -> {final[:80]}")
+        return final
+    except Exception as e:
+        print(f"[RESOLVE ERROR] {e}")
+        return url
+
+# --- EARNKARO ---
 def get_earnkaro_link(deal_url):
-    if not EARNKARO_TOKEN or not deal_url: return deal_url
-    supported = ["amazon", "flipkart", "myntra", "ajio", "meesho", "nykaa", "snapdeal", "croma", "tatacliq", "vijaysales"]
-    if not any(s in deal_url.lower() for s in supported): return deal_url
+    if not EARNKARO_TOKEN or not deal_url:
+        print(f"[EARNKARO SKIP] No token or URL")
+        return deal_url
+
+    # All known short link domains + full domains
+    supported = [
+        # Amazon
+        "amazon", "amzn.to", "amzn.in", "amzn.eu",
+        # Flipkart
+        "flipkart", "fkrt.it", "fkrt.to",
+        # Myntra — including short link domain myntr.in
+        "myntra", "myntr.in",
+        # Others
+        "ajio", "meesho", "nykaa", "snapdeal",
+        "croma", "tatacliq", "vijaysales",
+        "jiomart", "bigbasket", "reliancedigital",
+        "boat-lifestyle", "oneplus"
+    ]
+
+    # Check original URL first
+    url_to_use = deal_url
+    if not any(s in deal_url.lower() for s in supported):
+        # Try resolving short URL to real domain
+        resolved = resolve_url(deal_url)
+        if any(s in resolved.lower() for s in supported):
+            url_to_use = resolved
+            print(f"[EARNKARO] Using resolved URL: {url_to_use[:80]}")
+        else:
+            print(f"[EARNKARO SKIP] Unsupported domain: {deal_url[:80]}")
+            return deal_url
+
     try:
         api_url = "https://ekaro-api.affiliaters.in/api/converter/public"
         headers = {"Authorization": f"Bearer {EARNKARO_TOKEN}", "Content-Type": "application/json"}
-        payload = json.dumps({"deal": deal_url, "convert_option": "convert_only"})
+        payload = json.dumps({"deal": url_to_use, "convert_option": "convert_only"})
         r = requests.post(api_url, headers=headers, data=payload, timeout=8)
 
         print(f"[EARNKARO] Status: {r.status_code}, Response: {r.text[:300]}")
@@ -139,13 +178,12 @@ def get_earnkaro_link(deal_url):
             resp = r.json()
             if resp.get("success") == 1:
                 converted_text = resp.get("data", "")
-                # Extract the affiliate URL from the returned text
                 urls = re.findall(r'(https?://[^\s"<\]\)]+)', str(converted_text))
                 if urls:
                     print(f"[EARNKARO] Converted successfully: {urls[0]}")
                     return urls[0]
                 else:
-                    print(f"[EARNKARO] No URL found in response data: {converted_text}")
+                    print(f"[EARNKARO] No URL found in response: {converted_text}")
             else:
                 print(f"[EARNKARO REJECTED] {resp}")
         elif r.status_code == 429:
@@ -158,23 +196,25 @@ def get_earnkaro_link(deal_url):
 
 def process_with_gemini(title, body, product_links):
     if not GEMINI_API_KEY or not can_call_gemini():
-        return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": body[:300], "category_tags": ""}
+        return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": None, "category_tags": ""}
 
     primary_link = product_links[0] if product_links else "No link"
-    prompt = f"""You are an Indian deals affiliate marketer. Analyze this deal and respond ONLY in valid JSON.
-    TITLE: {title}
-    BODY: {body[:1000]}
-    LINK: {primary_link}
+    prompt = f"""You are an Indian deals affiliate marketer. Analyze this deal and respond ONLY in valid JSON with no extra text.
+TITLE: {title}
+BODY: {body[:1000]}
+LINK: {primary_link}
 
-    1. is_deal: true/false
-    2. is_duplicate: false
-    3. product_name: short name
-    4. price: "₹999" or null
-    5. discount: "60% off" or null
-    6. is_limited_time: true/false
-    7. rewritten_message: Exciting 2-line message mentioning product, price, discount. No fluff.
-    8. category_tags: #Amazon #Flipkart etc.
-    """
+Return ONLY this JSON:
+{{
+  "is_deal": true,
+  "is_duplicate": false,
+  "product_name": "short product name",
+  "price": "₹999 or null",
+  "discount": "60% off or null",
+  "is_limited_time": false,
+  "rewritten_message": "Exciting 2-line deal summary. Mention product, price, discount. No links.",
+  "category_tags": "#Myntra #Amazon etc"
+}}"""
 
     try:
         record_gemini_call()
@@ -185,17 +225,21 @@ def process_with_gemini(title, body, product_links):
         if r.status_code == 429:
             print("[GEMINI] 429 rate limited — waiting 15s")
             time.sleep(15)
-            return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": body[:300], "category_tags": ""}
+            return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": None, "category_tags": ""}
 
         if r.status_code == 200:
             raw = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             raw = re.sub(r'^```json\s*', '', raw)
             raw = re.sub(r'\s*```$', '', raw)
-            return json.loads(raw.strip())
+            parsed = json.loads(raw.strip())
+            print(f"[GEMINI OK] {parsed.get('product_name')} | {parsed.get('price')} | {parsed.get('discount')}")
+            return parsed
+        else:
+            print(f"[GEMINI ERROR] HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
         print(f"[GEMINI ERROR] {e}")
 
-    return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": body[:300], "category_tags": ""}
+    return {"is_deal": True, "is_duplicate": False, "product_name": title, "price": None, "discount": None, "is_limited_time": False, "rewritten_message": None, "category_tags": ""}
 
 def send_telegram(caption, buy_url=None, image_url=None):
     if not caption: return
@@ -212,12 +256,12 @@ def send_telegram(caption, buy_url=None, image_url=None):
             photo_data["caption"] = caption
             photo_data["photo"] = image_url
             r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=photo_data, timeout=TELEGRAM_TIMEOUT)
-            if r.status_code == 200: return  # Success!
+            if r.status_code == 200: return
             print(f"[TELEGRAM PHOTO ERROR] {r.status_code}: {r.text[:200]}")
         except Exception as e:
             print(f"[TELEGRAM PHOTO EXCEPTION] {e}")
 
-    # 2. Fallback to Text Message if image fails or doesn't exist
+    # 2. Fallback to Text Message
     try:
         data["text"] = caption
         r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=data, timeout=TELEGRAM_TIMEOUT)
@@ -261,7 +305,7 @@ def process_subreddit(subreddit):
         content = getattr(entry, 'content', [{'value': ''}])[0].value if hasattr(entry, 'content') else getattr(entry, 'summary', '')
         body = clean_html_text(content)
 
-        # --- IMAGE EXTRACTION (WITH URL CLEANER) ---
+        # --- IMAGE EXTRACTION ---
         image_url = None
         try:
             if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
@@ -274,7 +318,6 @@ def process_subreddit(subreddit):
                 if match:
                     image_url = match.group(1)
 
-            # Decode URL &amp; so Telegram can process it properly
             if image_url:
                 image_url = html.unescape(image_url)
                 if not image_url.startswith("http"):
@@ -312,7 +355,8 @@ def process_subreddit(subreddit):
         if price or discount:
             lines.append("  |  ".join(filter(None, [f"💰 {price}" if price else None, f"🏷️ {discount}" if discount else None])))
         if result.get("is_limited_time"): lines.append("⏰ <b>Limited Time Deal!</b>")
-        if result.get("rewritten_message"): lines.append(result.get("rewritten_message").strip())
+        if result.get("rewritten_message"):
+            lines.append(result.get("rewritten_message").strip())
         lines.append(f"#Deal #Loot {result.get('category_tags', '')} #{subreddit}".strip())
 
         buy_url = get_earnkaro_link(product_links[0])
